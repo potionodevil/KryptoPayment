@@ -10,7 +10,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { DbClient, TxOptions } from '../../src/services/contracts.js';
-import { addDecimalStrings } from '../../src/core/paymentService.js';
+import { addDecimalStrings, compareDecimalStrings } from '../../src/core/paymentService.js';
 
 export interface QueryLogEntry {
   text: string;
@@ -38,13 +38,16 @@ export class FakeDb implements DbClient {
   /** Alle Queries laufen serialisiert (emuliert die Zeilen-Serialisierung der echten DB). */
   query(text: string, params: unknown[] = [], txId?: string): Promise<{ rows: any[]; rowCount: number }> {
     const sql = text.replace(/\s+/g, ' ').trim();
-    const isForUpdate =
-      sql.toLowerCase() === 'select * from invoices where id = $1 for update';
+    const lower = sql.toLowerCase();
+    const isForUpdate = lower === 'select * from invoices where id = $1 for update';
+    const isAdvisory = lower.startsWith('select pg_advisory_xact_lock');
     // Sperrerwerb läuft AUSSERHALB der Query-Chain, damit COMMIT eines
     // anderen Transaktion nicht blockiert wird (emuliert echtes FOR UPDATE).
     const acquire = isForUpdate
       ? this.acquireLock(`inv:${String(params[0])}`, txId ?? null)
-      : Promise.resolve();
+      : isAdvisory
+        ? this.acquireLock(`adv:${String(params[0])}`, txId ?? null)
+        : Promise.resolve();
     return acquire.then(() =>
       this.enqueue(() => this.execute(sql, params, txId))
     );
@@ -149,6 +152,11 @@ export class FakeDb implements DbClient {
       return { rows: [], rowCount: 0 };
     }
 
+    // Advisory-Lock (pg_advisory_xact_lock): Sperrlogik in query(), hier No-Op
+    if (q.startsWith('select pg_advisory_xact_lock')) {
+      return { rows: [], rowCount: 0 };
+    }
+
     // --- invoices ---------------------------------------------------------
     if (q.startsWith('insert into invoices')) {
       const conflictKey = `${String(params[0])}\u0000${String(params[1])}`;
@@ -190,6 +198,54 @@ export class FakeDb implements DbClient {
         }
       }
       return { rows: [], rowCount: 0 };
+    }
+    // Aktive Invoices mit exakt kollidierendem Betrag (Betrags-Eindeutigkeit)
+    if (q.startsWith('select id from invoices where chain = $1 and crypto_currency = $2 and amount_crypto = $3')) {
+      const rows = [...this.invoices.values()].filter(
+        (row) =>
+          row.chain === params[0] &&
+          row.crypto_currency === params[1] &&
+          compareDecimalStrings(String(row.amount_crypto), String(params[2])) === 0 &&
+          ['CREATED', 'AWAITING_PAYMENT', 'PARTIALLY_PAID'].includes(row.status)
+      );
+      return { rows, rowCount: rows.length };
+    }
+    // Matcher-Kandidaten (FIFO: älteste zuerst; stabiler Sort lässt gleiche
+    // created_at in Einfügereihenfolge — emuliert ORDER BY created_at, id)
+    if (q.startsWith('select * from invoices where chain = $1 and crypto_currency = $2 and status in')) {
+      const rows = [...this.invoices.values()].filter(
+        (row) =>
+          row.chain === params[0] &&
+          row.crypto_currency === params[1] &&
+          (row.status === 'AWAITING_PAYMENT' || row.status === 'PARTIALLY_PAID')
+      );
+      rows.sort((a, b) =>
+        String(a.created_at) < String(b.created_at)
+          ? -1
+          : String(a.created_at) > String(b.created_at)
+            ? 1
+            : 0
+      );
+      return { rows, rowCount: rows.length };
+    }
+    // Watch-Targets: distinct (chain, currency, address) aktiver Invoices
+    if (q.startsWith('select distinct chain, crypto_currency as currency, address from invoices')) {
+      const seen = new Map<string, Row>();
+      for (const row of this.invoices.values()) {
+        if (!['CREATED', 'AWAITING_PAYMENT', 'PARTIALLY_PAID', 'PAID'].includes(row.status)) continue;
+        seen.set(`${row.chain}\u0000${row.crypto_currency}\u0000${row.address}`, {
+          chain: row.chain,
+          currency: row.crypto_currency,
+          address: row.address,
+        });
+      }
+      const rows = [...seen.values()].sort((a, b) =>
+        `${a.chain}\u0000${a.currency}\u0000${a.address}` <
+        `${b.chain}\u0000${b.currency}\u0000${b.address}`
+          ? -1
+          : 1
+      );
+      return { rows, rowCount: rows.length };
     }
     if (q.startsWith('update invoices set status')) {
       const row = this.invoices.get(String(params[0]));

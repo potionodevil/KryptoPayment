@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       Krypto Payment Gateway
  * Plugin URI:        https://example.com/krypto-gateway
- * Description:       WooCommerce-Zahlungsmethode für Kryptowährungen (BTC, LTC, ETH, SOL, XMR) mit HMAC-signierter Kommunikation zum Krypto Payment Gateway.
- * Version:           1.0.0
+ * Description:       Non-custodial WooCommerce-Zahlungsmethode für Kryptowährungen (BTC, LTC, ETH, SOL, XMR): Der Kunde zahlt direkt an die statische Wallet-Adresse des Betreibers, das Gateway überwacht nur die Blockchain (Forwarding, keine Verwahrung). HMAC-signierte Kommunikation zum Krypto Payment Gateway.
+ * Version:           1.1.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            Krypto Projekt
@@ -24,7 +24,7 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Plugin-Version (auch Cache-Buster für lokale Assets).
  */
-define( 'KG_VERSION', '1.0.0' );
+define( 'KG_VERSION', '1.1.0' );
 
 /**
  * Absolute Pfadangaben (Pfade werden NIE aus Nutzereingaben gebildet).
@@ -85,6 +85,11 @@ function kg_activate() {
 	add_option( KG_Admin::OPTION_KEY_ID, '' );
 	add_option( KG_Admin::OPTION_SECRET, '' );
 	add_option( KG_Admin::OPTION_WEBHOOK_IPS, '' );
+
+	// Statische Wallet-Zieladressen pro Coin/Chain (non-custodial Forwarding).
+	foreach ( KG_Security::allowed_chains() as $kg_chain ) {
+		add_option( KG_Admin::OPTION_ADDRESS_PREFIX . strtolower( $kg_chain ), '' );
+	}
 
 	// PHP-Version prüfen (keine fatal errors auf alten Hosts).
 	if ( version_compare( PHP_VERSION, '7.4', '<' ) ) {

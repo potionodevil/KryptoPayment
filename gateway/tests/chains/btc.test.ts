@@ -105,12 +105,12 @@ describe('BtcWatcher', () => {
     await expect(makeWatcher(fetchImpl).fetchPayments(ADDR)).rejects.toThrow(RpcError);
   });
 
-  it('deriveAddress ruft getnewaddress(label, bech32)', async () => {
-    const { fetchImpl, calls } = mockRpcFetch({ getnewaddress: 'bc1qderived0000000000000000000000000' });
+  it('führt KEINE Adressableitung durch (kein deriveAddress/getnewaddress)', async () => {
+    const { fetchImpl, calls } = mockRpcFetch({ listunspent: [] });
     const w = makeWatcher(fetchImpl);
-    const addr = await w.deriveAddress?.('merchant-42');
-    expect(addr).toBe('bc1qderived0000000000000000000000000');
-    expect(calls[0].method).toBe('getnewaddress');
-    expect(calls[0].params).toEqual(['merchant-42', 'bech32']);
+    // Forwarding-Modell: statische Zieladressen, keine Ableitung im Watcher
+    expect((w as unknown as Record<string, unknown>).deriveAddress).toBeUndefined();
+    await w.fetchPayments(ADDR);
+    expect(calls.map((c) => c.method)).toEqual(['listunspent']); // nur Abfrage
   });
 });

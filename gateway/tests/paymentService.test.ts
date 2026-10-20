@@ -8,7 +8,9 @@ import { createInvoiceService, type QuoteProvider } from '../src/core/invoiceSer
 import type { CreateInvoiceRequest } from '../src/types/index.js';
 import { FakeDb, fakeTxRunner } from './helpers/fakeDb.js';
 
-const quote: QuoteProvider = async () => ({ amountCrypto: '10.00000000', address: 'addr-1' });
+const BTC_ADDR = 'bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq';
+
+const quote: QuoteProvider = async () => ({ amountCrypto: '10.00000000' });
 
 function makeReq(overrides: Partial<CreateInvoiceRequest> = {}): CreateInvoiceRequest {
   return {
@@ -17,6 +19,7 @@ function makeReq(overrides: Partial<CreateInvoiceRequest> = {}): CreateInvoiceRe
     fiatCurrency: 'EUR',
     cryptoCurrency: 'BTC',
     chain: 'BTC',
+    targetAddress: BTC_ADDR,
     ...overrides,
   };
 }

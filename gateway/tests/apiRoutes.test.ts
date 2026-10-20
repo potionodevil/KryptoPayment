@@ -17,6 +17,9 @@ const MERCHANT_ID = '22222222-2222-2222-2222-222222222222';
 
 const quote: QuoteProvider = async () => ({ amountCrypto: '0.00250000', address: 'addr-int-1' });
 
+// Gültige BTC-Bech32-Adresse als Forwarding-Zieladresse (Pflichtfeld targetAddress).
+const TARGET_BTC = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
+
 function buildDeps(db: FakeDb, configOverrides: Record<string, string> = {}): AppDeps {
   const config = loadConfig({ ENCRYPTION_KEY, ...configOverrides });
   const txRunner = fakeTxRunner(db);
@@ -61,6 +64,7 @@ describe('api/server — REST-Endpunkte (HTTP-Integration)', () => {
       fiatCurrency: 'EUR',
       cryptoCurrency: 'BTC',
       chain: 'BTC',
+      targetAddress: TARGET_BTC,
     });
     const res = await api(server.baseUrl, {
       secret: SECRET,
@@ -71,7 +75,7 @@ describe('api/server — REST-Endpunkte (HTTP-Integration)', () => {
     });
     expect(res.status).toBe(201);
     expect(res.body.invoice.status).toBe('AWAITING_PAYMENT');
-    expect(res.body.paymentAddress).toBe('addr-int-1');
+    expect(res.body.paymentAddress).toBe(TARGET_BTC);
     expect(res.body.amountCrypto).toBe('0.00250000');
     // Antwort-Signatur ist mit dem API-Secret verifizierbar
     const expected = signResponse(
@@ -114,6 +118,7 @@ describe('api/server — REST-Endpunkte (HTTP-Integration)', () => {
       fiatCurrency: 'EUR',
       cryptoCurrency: 'BTC',
       chain: 'BTC',
+      targetAddress: TARGET_BTC,
     });
     const opts = {
       secret: SECRET,
@@ -142,6 +147,7 @@ describe('api/server — REST-Endpunkte (HTTP-Integration)', () => {
         fiatCurrency: 'EUR',
         cryptoCurrency: 'BTC',
         chain: 'BTC',
+        targetAddress: TARGET_BTC,
       }),
     });
     const id = create.body.invoice.id;
@@ -182,14 +188,17 @@ describe('api/server — REST-Endpunkte (HTTP-Integration)', () => {
         fiatCurrency: 'EUR',
         cryptoCurrency: 'BTC',
         chain: 'BTC',
+        targetAddress: TARGET_BTC,
       }),
     });
     const id = create.body.invoice.id;
+    // Tatsächlichen (ggf. genudge'den) Krypto-Betrag verwenden, damit die
+    // volle Summe gebucht wird -> PAID -> CONFIRMED.
     const payBody = JSON.stringify({
       chain: 'BTC',
       txid: 'tx-http-1',
       vout: 0,
-      amount: '0.00250000',
+      amount: String(create.body.amountCrypto),
       confirmations: 5,
     });
     const first = await api(server.baseUrl, {

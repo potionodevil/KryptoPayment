@@ -29,52 +29,13 @@ import {
 } from './invoiceService.js';
 
 // ---------------------------------------------------------------------------
-// Exakte Dezimal-Arithmetik auf Strings (NUMERIC — kein Float-Geld!)
+// Exakte Dezimal-Arithmetik: implementiert in core/decimal.ts und hier für
+// Bestands-Imports (FakeDb, Tests) re-exportiert.
 // ---------------------------------------------------------------------------
 
-function parseDec(s: string): { neg: boolean; int: string; frac: string } {
-  const t = String(s).trim();
-  const neg = t.startsWith('-');
-  const body = neg ? t.slice(1) : t;
-  const dot = body.indexOf('.');
-  const int = dot === -1 ? body : body.slice(0, dot);
-  const frac = dot === -1 ? '' : body.slice(dot + 1);
-  return { neg, int: int.length > 0 ? int : '0', frac };
-}
+import { compareDecimalStrings } from './decimal.js';
 
-function scaleOf(s: string): number {
-  return parseDec(s).frac.length;
-}
-
-function toScaled(s: string, scale: number): bigint {
-  const d = parseDec(s);
-  const frac = (d.frac + '0'.repeat(scale)).slice(0, scale);
-  const v = BigInt(d.int) * 10n ** BigInt(scale) + BigInt(frac === '' ? '0' : frac);
-  return d.neg ? -v : v;
-}
-
-function fromScaled(v: bigint, scale: number): string {
-  const neg = v < 0n;
-  const abs = neg ? -v : v;
-  if (scale === 0) return (neg ? '-' : '') + abs.toString();
-  const s = abs.toString().padStart(scale + 1, '0');
-  const int = s.slice(0, s.length - scale);
-  const frac = s.slice(s.length - scale);
-  return (neg ? '-' : '') + `${int}.${frac}`;
-}
-
-/** Exakte Addition zweier Dezimal-Strings. */
-export function addDecimalStrings(a: string, b: string): string {
-  const scale = Math.max(scaleOf(a), scaleOf(b));
-  return fromScaled(toScaled(a, scale) + toScaled(b, scale), scale);
-}
-
-/** Exakter Vergleich: -1 | 0 | 1. */
-export function compareDecimalStrings(a: string, b: string): number {
-  const scale = Math.max(scaleOf(a), scaleOf(b));
-  const diff = toScaled(a, scale) - toScaled(b, scale);
-  return diff === 0n ? 0 : diff > 0n ? 1 : -1;
-}
+export { addDecimalStrings, compareDecimalStrings } from './decimal.js';
 
 // ---------------------------------------------------------------------------
 // SQL (parametrisiert)

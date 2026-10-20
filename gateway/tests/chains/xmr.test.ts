@@ -90,17 +90,12 @@ describe('XmrWatcher', () => {
     expect(payments).toEqual([]);
   });
 
-  it('deriveAddress: create_account + get_address', async () => {
-    const { fetchImpl, calls } = mockRpcFetch((method: string) => {
-      if (method === 'create_account') return { account_index: 3, address: ADDR };
-      if (method === 'get_address') return { address: '44DerivedAddress' };
-      throw new Error(`unerwartet: ${method}`);
-    });
+  it('führt KEINE Adressableitung durch (kein deriveAddress/create_account)', async () => {
+    const { fetchImpl, calls } = mockRpcFetch(xmrResponder());
     const w = new XmrWatcher({ rpcUrl: 'http://x', fetchImpl });
-    const addr = await w.deriveAddress?.('merchant-1');
-    expect(addr).toBe('44DerivedAddress');
-    expect(calls.map((c) => c.method)).toEqual(['create_account', 'get_address']);
-    expect(calls[0].params).toEqual({ label: 'merchant-1' });
-    expect(calls[1].params).toEqual({ account_index: 3, address_index: 0 });
+    // Forwarding-Modell: statische Zieladressen, keine Ableitung im Watcher
+    expect((w as unknown as Record<string, unknown>).deriveAddress).toBeUndefined();
+    await w.fetchPayments(ADDR);
+    expect(calls.map((c) => c.method)).toEqual(['get_transfers']); // nur Abfrage
   });
 });

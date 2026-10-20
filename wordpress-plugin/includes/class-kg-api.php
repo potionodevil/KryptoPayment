@@ -212,22 +212,24 @@ class KG_Api {
 	 * Erzeugt eine Zahlungsanweisung (Invoice) beim Gateway.
 	 *
 	 * Feldnamen exakt laut API-Vertrag (CreateInvoiceRequest):
-	 * orderRef, amountFiat, fiatCurrency, cryptoCurrency, chain.
+	 * orderRef, amountFiat, fiatCurrency, cryptoCurrency, chain, targetAddress.
 	 *
 	 * @param string $order_ref        Referenz des Shops (WooCommerce-Order-ID).
 	 * @param string $amount_fiat      Fiat-Betrag als numerischer String.
 	 * @param string $fiat_currency    Fiat-Währung (ISO-4217, z. B. EUR).
 	 * @param string $crypto_currency  Kryptowährung (BTC/LTC/ETH/SOL/XMR).
 	 * @param string $chain            Chain (BTC/LTC/ETH/SOL/XMR).
+	 * @param string $target_address   Forwarding-Zieladresse (Wallet des Betreibers).
 	 * @return array|WP_Error CreateInvoiceResponse-Daten oder WP_Error.
 	 */
-	public function create_invoice( $order_ref, $amount_fiat, $fiat_currency, $crypto_currency, $chain ) {
+	public function create_invoice( $order_ref, $amount_fiat, $fiat_currency, $crypto_currency, $chain, $target_address ) {
 		$payload = array(
 			'orderRef'       => (string) $order_ref,
 			'amountFiat'     => (string) $amount_fiat,
 			'fiatCurrency'   => strtoupper( (string) $fiat_currency ),
 			'cryptoCurrency' => strtoupper( (string) $crypto_currency ),
 			'chain'          => strtoupper( (string) $chain ),
+			'targetAddress'  => (string) $target_address,
 		);
 
 		return $this->request( 'POST', '/api/v1/invoices', $payload );

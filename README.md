@@ -4,6 +4,16 @@ Multi-Chain Krypto-Payment-Gateway für die gängigsten Währungen (BTC, LTC, ET
 SOL, XMR). Docker-basiert, mit WordPress-Plugin (WooCommerce), race-condition-hart und
 mehrschichtig abgesichert.
 
+## Modell: Non-custodial Forwarding
+Das Gateway **verwahrt kein Guthaben** und besitzt **keine Keys**. Der Betreiber
+hinterlegt pro Chain eine **statische eigene Wallet-Adresse**. Kunden zahlen **direkt**
+an diese Adresse. Das Gateway leitet nur weiter, überwacht die Blockchain und markiert
+Bestellungen automatisch als „bezahlt" (schlanke DB als Transaktions-Nachweis).
+
+Zuordnung eingehender Zahlungen: da alle Bestellungen eines Coins an dieselbe statische
+Adresse zahlen, erfolgt die Zuordnung über den **exakten Betrag + FIFO** (unter aktiven
+Invoices betragseindeutig, race-sicher).
+
 ## Struktur
 ```
 docker-compose.yml        # edge (nginx/WAF) → gateway (Node/TS) → postgres + redis

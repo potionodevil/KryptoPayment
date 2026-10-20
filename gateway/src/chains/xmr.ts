@@ -7,7 +7,7 @@
  */
 import type { ChainPayment, ChainWatcher } from '../services/contracts.js';
 import type { FetchLike, XmrWatcherConfig } from './types.js';
-import { RpcError, formatUnits, jsonRpcCall, parseBigIntish, toFiniteNumber } from './rpc.js';
+import { formatUnits, jsonRpcCall, parseBigIntish, toFiniteNumber } from './rpc.js';
 
 /** XMR hat 12 Dezimalstellen (Piconero). */
 export const PICODERO_DECIMALS = 12;
@@ -85,24 +85,6 @@ export class XmrWatcher implements ChainWatcher {
       payments.push(payment);
     }
     return payments;
-  }
-
-  /**
-   * Erzeugt einen Subaccount (Empfangsadresse) für den Merchant
-   * via monero-wallet-RPC: create_account + get_address.
-   */
-  async deriveAddress(merchantId: string): Promise<string> {
-    const created = await this.call('create_account', { label: merchantId ?? '' });
-    const accountIndex = toFiniteNumber((created as Record<string, unknown> | null)?.account_index);
-    if (accountIndex === undefined) {
-      throw new RpcError('create_account lieferte keinen account_index');
-    }
-    const addrRes = await this.call('get_address', { account_index: accountIndex, address_index: 0 });
-    const address = (addrRes as Record<string, unknown> | null)?.address;
-    if (typeof address !== 'string' || !address) {
-      throw new RpcError('get_address lieferte keine Adresse');
-    }
-    return address;
   }
 
   private async call(method: string, params: Record<string, unknown>): Promise<unknown> {

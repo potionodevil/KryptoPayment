@@ -65,7 +65,12 @@ export interface CreateInvoiceRequest {
   fiatCurrency: string;
   cryptoCurrency: string;
   chain: Chain;
-  // optionale Fixierung des Kurses wird serverseitig ermittelt
+  /**
+   * Forwarding-Zieladresse (vom Betreiber im WordPress-Admin konfiguriert und
+   * mit der Anfrage mitgeliefert). Der Kunde zahlt direkt an diese Adresse.
+   * Das Gateway validiert das Format pro Chain, verwahrt aber nichts.
+   */
+  targetAddress: string;
 }
 
 /** Response: Invoice mit Zahlungsanweisungen. */
@@ -96,6 +101,32 @@ export interface AuthHeaders {
   'x-kg-timestamp': string;     // unix seconds
   'x-kg-nonce': string;         // eindeutig pro Request
   'x-kg-signature': string;     // hex HMAC(secret, method+path+timestamp+nonce+bodyHash)
+}
+
+/**
+ * Forwarding-Modell: das Gateway leitet NUR weiter (non-custodial).
+ * Pro Coin/Currency gibt der Betreiber eine statische Zieladresse vor
+ * (eigene Wallet — das Gateway besitzt KEINE Keys, keine Verwahrung).
+ * Kunden zahlen direkt an diese Adresse.
+ */
+export interface CoinAddressConfig {
+  chain: Chain;
+  currency: string;   // z.B. 'BTC', 'ETH', 'USDT', 'SOL', 'XMR'
+  address: string;    // statische Auszahlungs-/Empfangsadresse des Betreibers
+}
+
+/**
+ * Zuordnung einer eingehenden Blockchain-Zahlung zu einer Invoice.
+ * Da alle Bestellungen eines Coins an DIESELBE Adresse zahlen, erfolgt die
+ * Zuordnung über den exakten Betrag (+ FIFO bei identischen Beträgen).
+ */
+export interface PaymentMatch {
+  invoiceId: string;
+  chain: Chain;
+  txid: string;
+  vout: number;
+  amount: string;         // exakter empfangener Betrag (String, kein Float)
+  confirmations: number;
 }
 
 export interface ApiError {

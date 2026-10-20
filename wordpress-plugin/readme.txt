@@ -4,27 +4,41 @@ Tags: woocommerce, payment, cryptocurrency, bitcoin, monero
 Requires at least: 6.0
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.1.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-WooCommerce-Zahlungsmethode für Kryptowährungen (BTC, LTC, ETH, SOL, XMR) mit HMAC-signierter Kommunikation zum Krypto Payment Gateway.
+Non-custodial WooCommerce-Zahlungsmethode für Kryptowährungen (BTC, LTC, ETH, SOL, XMR): Der Kunde zahlt direkt an die statische Wallet-Adresse des Betreibers, das Gateway überwacht nur die Blockchain (Forwarding, keine Verwahrung).
 
 == Description ==
 
-Das Plugin integriert den Krypto Payment Gateway in WordPress/WooCommerce:
+Das Plugin integriert den Krypto Payment Gateway in WordPress/WooCommerce
+im **non-custodial Forwarding-Modell**:
 
+* Der Betreiber hinterlegt pro Coin/Chain eine statische, eigene
+  Wallet-Zieladresse (Einstellungen -> Krypto Gateway). Es werden KEINE
+  Adressen pro Bestellung erzeugt und keine Adressen abgeleitet.
+* Der Kunde zahlt DIREKT an diese statische Adresse. Das Gateway verwahrt
+  keine Guthaben und leitet Zahlungen nicht weiter – es überwacht nur die
+  Blockchain und meldet den Zahlungseingang.
 * Zahlungsmethode "Krypto" im WooCommerce-Checkout (BTC, LTC, ETH, SOL, XMR).
 * Erzeugt beim Checkout eine Invoice über `POST /api/v1/invoices`
-  (orderRef = WC-Order-ID, amountFiat, fiatCurrency, cryptoCurrency, chain).
-* Zeigt Zahlungsadresse und Krypto-Betrag auf der Danke-Seite und pollt den
-  Status (`GET /api/v1/invoices/:id`) über einen lokalen AJAX-Endpunkt.
+  (orderRef = WC-Order-ID, amountFiat, fiatCurrency, cryptoCurrency, chain);
+  die Antwort liefert den exakten Krypto-Betrag (`amountCrypto`), die
+  statische `paymentAddress` und `expiresAt`. Die gemeldete Adresse wird
+  gegen die lokal konfigurierte statische Adresse geprüft (Abweichung =
+  Zahlung wird abgebrochen).
+* Zeigt die statische Zahlungsadresse und den Krypto-Betrag auf der
+  Danke-Seite und pollt den Status (`GET /api/v1/invoices/:id`) über einen
+  lokalen AJAX-Endpunkt.
 * Empfängt signierte Webhook-Events (`invoice.created|paid|confirmed|expired`)
   über `POST /kg-gateway/v1/webhook` (REST) bzw. `/wc-api/kg-webhook` (Legacy)
-  und synchronisiert den Bestellstatus (pending -> processing/completed).
+  und synchronisiert den Bestellstatus (pending -> processing/completed);
+  `invoice.paid` markiert die Bestellung automatisch als bezahlt.
 * Eigene, SQL-injection-sichere Anmeldung über Shortcode `[kg_login_form]`.
 * Admin-Einstellungsseite unter Einstellungen -> Krypto Gateway
-  (Gateway-URL, key_id, Secret als Passwortfeld, Webhook-IP-Whitelist).
+  (Gateway-URL, key_id, Secret als Passwortfeld, Webhook-IP-Whitelist,
+  statische Wallet-Zieladressen pro Coin/Chain).
 
 = Signaturformel (muss exakt zum Gateway passen) =
 
@@ -60,6 +74,13 @@ Webhook-Signatur: `x-kg-signature = HMAC-SHA256(secret, body)`, Prüfung per
    `wp_verify_nonce`) für alle Formulare/AJAX, Capability-Check
    `current_user_can('manage_options')` für Admin-Funktionen, alle Ausgaben
    mit `esc_html`/`esc_attr`/`esc_url` escaped, Eingaben sanitisiert.
+5. **Adressvalidierung (Forwarding)**: Die statischen Wallet-Zieladressen
+   werden beim Speichern ketten-spezifisch geprüft (Bech32/Base58/Hex,
+   `KG_Security::is_valid_wallet_address`); ungültige Werte werden
+   verworfen. Beim Checkout wird die vom Gateway gemeldete `paymentAddress`
+   per `hash_equals` gegen die konfigurierte statische Adresse geprüft –
+   bei Abweichung wird die Zahlung abgebrochen, damit nie eine fremde
+   Adresse als Zahlungsziel angezeigt wird.
 
 = Lizenz der Geheimnisse =
 
@@ -73,9 +94,13 @@ geloggt und nie in Notices geschrieben. Empfehlung: Datenbankzugriff auf die
 2. Plugin in WordPress aktivieren.
 3. Unter Einstellungen -> Krypto Gateway die Gateway-Basis-URL, `key_id`,
    `secret` und optional die Webhook-IP-Whitelist eintragen.
-4. Unter WooCommerce -> Einstellungen -> Zahlungen die Methode "Krypto"
+4. Unter Einstellungen -> Krypto Gateway pro Coin/Chain die statische
+   Wallet-Zieladresse der EIGENEN Wallet hinterlegen (BTC, LTC, ETH, SOL,
+   XMR). Kunden zahlen direkt an diese Adresse; ungültige Adressformate
+   werden beim Speichern verworfen.
+5. Unter WooCommerce -> Einstellungen -> Zahlungen die Methode "Krypto"
    aktivieren und die Kryptowährung wählen.
-5. Optional: Shortcode `[kg_login_form]` auf einer Seite einbinden.
+6. Optional: Shortcode `[kg_login_form]` auf einer Seite einbinden.
 
 == Frequently Asked Questions ==
 
@@ -115,11 +140,26 @@ Status-Poll synchronisiert die Bestellung.
 
 == Changelog ==
 
+= 1.1.0 =
+* Umstellung auf das non-custodial Forwarding-Modell: Der Kunde zahlt direkt
+  an eine statische, pro Coin/Chain konfigurierte Wallet-Adresse des
+  Betreibers. Keine pro-Invoice-Adressen, keine Adressableitung, keine
+  Verwahrung. Neue Admin-Felder für die statischen Zieladressen inkl.
+  ketten-spezifischer Adressvalidierung; Cross-Check der vom Gateway
+  gemeldeten `paymentAddress` gegen die konfigurierte Adresse (Abweichung
+  bricht die Zahlung ab); neue Order-Metadaten `_kg_address_source`;
+  angepasste Hinweistexte (Danke-Seite, Order-Notizen, Checkout).
+
 = 1.0.0 =
 * Erste Version: WooCommerce-Zahlungsmethode, HMAC-signierte API-Kommunikation,
   signierte Webhooks, SQL-injection-sicheres Login-Formular, Anti-Sideloading.
 
 == Upgrade Notice ==
+
+= 1.1.0 =
+Umstellung auf non-custodial Forwarding: Bitte unter Einstellungen ->
+Krypto Gateway pro Coin/Chain die statischen Wallet-Zieladressen der
+eigenen Wallet hinterlegen.
 
 = 1.0.0 =
 Erste Version.

@@ -2,8 +2,18 @@
 /**
  * WooCommerce-Integration: Zahlungsmethode "Krypto" und Order-Status-Sync.
  *
- * - Erzeugt beim Checkout eine Invoice über POST /api/v1/invoices
- *   (orderRef = WC-Order-ID, Betrag, Währung, gewählte Krypto/Chain).
+ * NON-CUSTODIAL FORWARDING-MODELL:
+ * - Der Betreiber hinterlegt pro Coin/Chain eine statische, eigene
+ *   Wallet-Zieladresse (Admin-Einstellungen). Es gibt KEINE pro Bestellung
+ *   generierten Adressen und keine Adressableitung.
+ * - Der Kunde zahlt DIREKT an diese statische Adresse; das Gateway verwahrt
+ *   keine Guthaben, sondern überwacht nur die Blockchain.
+ * - Beim Checkout wird eine Invoice über POST /api/v1/invoices erzeugt
+ *   (orderRef = WC-Order-ID, Betrag, Währung, gewählte Krypto/Chain); die
+ *   Antwort liefert den exakten Krypto-Betrag (amountCrypto), die statische
+ *   paymentAddress und expiresAt.
+ * - Die in der Antwort gemeldete paymentAddress wird gegen die lokal
+ *   konfigurierte statische Adresse geprüft (Abweichung = Abbruch).
  * - Zeigt Zahlungsadresse/Betrag auf der Danke-Seite und pollt den Status.
  * - Empfängt signierte Webhook-Events (invoice.created|paid|confirmed|expired)
  *   über REST (/kg-gateway/v1/webhook) und Legacy (/wc-api/kg-webhook) und
@@ -30,6 +40,13 @@ class KG_Woo {
 	const META_STATUS       = '_kg_invoice_status';
 	const META_EXPIRES      = '_kg_invoice_expires';
 	const META_TXID         = '_kg_txid';
+
+	/**
+	 * Herkunft der Zahlungsadresse: 'static-config' = lokal konfigurierte
+	 * statische Betreiber-Adresse, 'static-gateway' = statische Adresse laut
+	 * Gateway-Antwort (kein lokaler Eintrag vorhanden).
+	 */
+	const META_ADDRESS_SOURCE = '_kg_address_source';
 
 	/**
 	 * Registriert alle WooCommerce-Hooks.
@@ -333,7 +350,7 @@ if ( class_exists( 'WC_Payment_Gateway' ) ) {
 		public function __construct() {
 			$this->id                 = 'kg_crypto';
 			$this->method_title       = esc_html__( 'Krypto Payment Gateway', 'krypto-gateway' );
-			$this->method_description = esc_html__( 'Zahlung per Kryptowährung (BTC, LTC, ETH, SOL, XMR) über den Krypto Payment Gateway.', 'krypto-gateway' );
+			$this->method_description = esc_html__( 'Zahlung per Kryptowährung (BTC, LTC, ETH, SOL, XMR) im Non-custodial-Forwarding-Modell: Der Kunde zahlt direkt an die statische, betreiber-eigene Wallet-Adresse; das Gateway verwahrt keine Guthaben und überwacht nur die Blockchain.', 'krypto-gateway' );
 			$this->has_fields         = false;
 			$this->supports           = array( 'products' );
 
@@ -372,7 +389,7 @@ if ( class_exists( 'WC_Payment_Gateway' ) ) {
 					'title'       => esc_html__( 'Beschreibung', 'krypto-gateway' ),
 					'type'        => 'textarea',
 					'description' => esc_html__( 'Hinweistext, der im Checkout angezeigt wird.', 'krypto-gateway' ),
-					'default'     => esc_html__( 'Bezahlen Sie sicher mit Kryptowährung. Die Zahlungsadresse wird nach der Bestellung angezeigt.', 'krypto-gateway' ),
+					'default'     => esc_html__( 'Bezahlen Sie direkt mit Kryptowährung an die statische Wallet-Adresse des Shops (non-custodial). Ihre Bestellung wird bei Zahlungseingang automatisch als bezahlt markiert.', 'krypto-gateway' ),
 				),
 				'crypto_currency' => array(
 					'title'       => esc_html__( 'Kryptowährung', 'krypto-gateway' ),
@@ -432,12 +449,24 @@ if ( class_exists( 'WC_Payment_Gateway' ) ) {
 			$amount_fiat   = KG_Security::sanitize_amount( $order->get_total() );
 			$fiat_currency = strtoupper( (string) $order->get_currency() );
 
+			// Forwarding-Zieladresse (statische Wallet des Betreibers) aus dem Admin.
+			$target_address = KG_Admin::static_address( $crypto );
+			if ( '' === $target_address ) {
+				wc_add_notice(
+					esc_html__( 'Für diese Kryptowährung ist keine Ziel-Wallet-Adresse konfiguriert.', 'krypto-gateway' ),
+					'error'
+				);
+
+				return array( 'result' => 'failure' );
+			}
+
 			$result = $api->create_invoice(
 				(string) $order->get_id(),
 				$amount_fiat,
 				$fiat_currency,
 				$crypto,
-				$crypto
+				$crypto,
+				$target_address
 			);
 
 			if ( is_wp_error( $result ) ) {
@@ -458,14 +487,43 @@ if ( class_exists( 'WC_Payment_Gateway' ) ) {
 				return array( 'result' => 'failure' );
 			}
 
+			/*
+			 * Forwarding-Modell: Die Zahlungsadresse ist die statische,
+			 * betreiber-eigene Wallet-Adresse (KEINE pro-Invoice-Adresse,
+			 * keine Adressableitung). Die lokal konfigurierte Adresse ist
+			 * die Quelle der Wahrheit; weicht die vom Gateway gemeldete
+			 * Adresse davon ab, wird die Zahlung abgebrochen (Schutz vor
+			 * Manipulation bzw. fehlerhafter Gateway-Konfiguration).
+			 */
+			$static_addr    = KG_Admin::static_address( $crypto );
+			$address_source = 'static-gateway';
+
+			if ( '' !== $static_addr ) {
+				if ( ! KG_Security::equals( $static_addr, $payment_addr ) ) {
+					wc_add_notice(
+						esc_html__(
+							'Zahlung abgebrochen: Die vom Gateway gemeldete Adresse weicht von der konfigurierten statischen Wallet-Adresse ab.',
+							'krypto-gateway'
+						),
+						'error'
+					);
+
+					return array( 'result' => 'failure' );
+				}
+
+				$payment_addr   = $static_addr;
+				$address_source = 'static-config';
+			}
+
 			$meta = array(
-				KG_Woo::META_INVOICE_ID => $invoice_id,
-				KG_Woo::META_ADDRESS    => $payment_addr,
-				KG_Woo::META_AMOUNT     => $amount_crypto,
-				KG_Woo::META_CRYPTO     => $crypto,
-				KG_Woo::META_CHAIN      => $crypto,
-				KG_Woo::META_STATUS     => isset( $invoice['status'] ) ? sanitize_text_field( (string) $invoice['status'] ) : 'CREATED',
-				KG_Woo::META_EXPIRES    => $expires_at,
+				KG_Woo::META_INVOICE_ID     => $invoice_id,
+				KG_Woo::META_ADDRESS        => $payment_addr,
+				KG_Woo::META_AMOUNT         => $amount_crypto,
+				KG_Woo::META_CRYPTO         => $crypto,
+				KG_Woo::META_CHAIN          => $crypto,
+				KG_Woo::META_STATUS         => isset( $invoice['status'] ) ? sanitize_text_field( (string) $invoice['status'] ) : 'CREATED',
+				KG_Woo::META_EXPIRES        => $expires_at,
+				KG_Woo::META_ADDRESS_SOURCE => $address_source,
 			);
 
 			foreach ( $meta as $key => $value ) {
@@ -478,11 +536,12 @@ if ( class_exists( 'WC_Payment_Gateway' ) ) {
 
 			$order->add_order_note(
 				sprintf(
-					/* translators: 1: invoice id, 2: crypto amount, 3: currency */
-					esc_html__( 'Krypto-Rechnung %1$s erstellt: %2$s %3$s.', 'krypto-gateway' ),
+					/* translators: 1: invoice id, 2: crypto amount, 3: currency, 4: static wallet address */
+					esc_html__( 'Krypto-Rechnung %1$s erstellt: %2$s %3$s. Zahlung direkt an die statische Wallet-Adresse %4$s (non-custodial Forwarding, keine Verwahrung durch das Gateway).', 'krypto-gateway' ),
 					$invoice_id,
 					$amount_crypto,
-					$crypto
+					$crypto,
+					$payment_addr
 				)
 			);
 
@@ -537,8 +596,11 @@ if ( class_exists( 'WC_Payment_Gateway' ) ) {
 
 			echo '<section class="kg-payment-details">';
 			echo '<h2>' . esc_html__( 'Zahlungsanweisung (Krypto)', 'krypto-gateway' ) . '</h2>';
-			echo '<p>' . esc_html__( 'Bitte senden Sie den exakten Betrag an die folgende Adresse:', 'krypto-gateway' ) . '</p>';
-			echo '<p><strong>' . esc_html__( 'Zahlungsadresse:', 'krypto-gateway' ) . '</strong><br />';
+			echo '<p>' . esc_html__( 'Bitte senden Sie den exakten Betrag direkt an die folgende statische Wallet-Adresse des Shops:', 'krypto-gateway' ) . '</p>';
+			echo '<p class="kg-forwarding-note">';
+			echo esc_html__( 'Non-custodial Forwarding: Ihre Zahlung geht direkt auf die Wallet des Shops. Das Gateway verwahrt keine Guthaben und leitet Zahlungen nicht weiter – es überwacht ausschließlich die Blockchain und markiert Ihre Bestellung automatisch als bezahlt.', 'krypto-gateway' );
+			echo '</p>';
+			echo '<p><strong>' . esc_html__( 'Zahlungsadresse (statisch):', 'krypto-gateway' ) . '</strong><br />';
 			echo '<code id="kg-payment-address">' . esc_html( $address ) . '</code></p>';
 			echo '<p><strong>' . esc_html__( 'Betrag:', 'krypto-gateway' ) . '</strong> ';
 			echo '<span id="kg-payment-amount">' . esc_html( $amount ) . '</span> ';

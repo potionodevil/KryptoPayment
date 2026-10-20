@@ -2,9 +2,12 @@
 /**
  * Admin-Einstellungsseite des Krypto Payment Gateway Plugins.
  *
- * Felder: Gateway-Base-URL, key_id, secret (Passwortfeld) und eine
- * IP-Whitelist für den Webhook-Endpunkt. Der Secret wird nie im Klartext
- * ausgegeben, geloggt oder in Notices geschrieben.
+ * Felder: Gateway-Base-URL, key_id, secret (Passwortfeld), eine
+ * IP-Whitelist für den Webhook-Endpunkt und die statischen, eigenen
+ * Wallet-Zieladressen pro Coin/Chain (non-custodial Forwarding-Modell:
+ * der Kunde zahlt DIREKT an diese Adresse, das Gateway verwahrt nichts).
+ * Der Secret wird nie im Klartext ausgegeben, geloggt oder in Notices
+ * geschrieben.
  *
  * @package KryptoGateway
  */
@@ -23,6 +26,12 @@ class KG_Admin {
 	const OPTION_KEY_ID      = 'kg_key_id';
 	const OPTION_SECRET      = 'kg_secret';
 	const OPTION_WEBHOOK_IPS = 'kg_webhook_ips';
+
+	/**
+	 * Präfix der Optionschlüssel für die statischen Wallet-Zieladressen
+	 * (Suffix = Chain in Kleinbuchstaben, z. B. kg_wallet_address_btc).
+	 */
+	const OPTION_ADDRESS_PREFIX = 'kg_wallet_address_';
 
 	/**
 	 * Hook-Gruppe der Settings API.
@@ -106,6 +115,64 @@ class KG_Admin {
 				'default'           => '',
 			)
 		);
+
+		// Statische Wallet-Zieladressen: eine Option pro Coin/Chain, jeweils
+		// mit ketten-spezifischer Formatprüfung (keine Adressableitung!).
+		foreach ( KG_Security::allowed_chains() as $chain ) {
+			register_setting(
+				self::SETTINGS_GROUP,
+				self::OPTION_ADDRESS_PREFIX . strtolower( $chain ),
+				array(
+					'type'              => 'string',
+					'sanitize_callback' => static function ( $value ) use ( $chain ) {
+						return KG_Security::sanitize_wallet_address( $value, $chain );
+					},
+					'default'           => '',
+				)
+			);
+		}
+	}
+
+	/* -------------------------------------------------------------------------
+	 * Statische Wallet-Zieladressen (non-custodial Forwarding)
+	 * ---------------------------------------------------------------------- */
+
+	/**
+	 * Liefert den Optionschlüssel der statischen Zieladresse einer Chain.
+	 *
+	 * @param mixed $chain Chain (BTC/LTC/ETH/SOL/XMR).
+	 * @return string Optionschlüssel oder '' bei ungültiger Chain.
+	 */
+	public static function address_option_key( $chain ) {
+		$chain = KG_Security::normalize_chain( $chain );
+
+		if ( '' === $chain ) {
+			return '';
+		}
+
+		return self::OPTION_ADDRESS_PREFIX . strtolower( $chain );
+	}
+
+	/**
+	 * Liefert die konfigurierte statische Wallet-Zieladresse einer Chain.
+	 *
+	 * Das ist die EIGENE Wallet des Betreibers; Kunden zahlen direkt dorthin.
+	 * Werte mit ungültigem Format werden als nicht konfiguriert behandelt.
+	 *
+	 * @param mixed $chain Chain (BTC/LTC/ETH/SOL/XMR).
+	 * @return string Wallet-Adresse oder '' (nicht konfiguriert).
+	 */
+	public static function static_address( $chain ) {
+		$chain = KG_Security::normalize_chain( $chain );
+		$key   = self::address_option_key( $chain );
+
+		if ( '' === $chain || '' === $key ) {
+			return '';
+		}
+
+		$address = (string) get_option( $key, '' );
+
+		return KG_Security::is_valid_wallet_address( $address, $chain ) ? $address : '';
 	}
 
 	/* -------------------------------------------------------------------------
@@ -193,6 +260,7 @@ class KG_Admin {
 		$key_id      = (string) get_option( self::OPTION_KEY_ID, '' );
 		$secret      = (string) get_option( self::OPTION_SECRET, '' );
 		$webhook_ips = (string) get_option( self::OPTION_WEBHOOK_IPS, '' );
+		$chains      = KG_Security::allowed_chains();
 
 		$webhook_rest_url = rest_url( 'kg-gateway/v1/webhook' );
 		$webhook_wc_url   = home_url( '/wc-api/kg-webhook' );
@@ -284,9 +352,51 @@ class KG_Admin {
 							<p class="description">
 								<?php esc_html_e( 'Komma-getrennte IP-Adressen des Gateways. Leer lassen = alle IPs (nicht empfohlen). Empfehlung: Whitelist strikt setzen.', 'krypto-gateway' ); ?>
 							</p>
-						</td>
-					</tr>
-				</table>
+							</td>
+							</tr>
+							</table>
+
+							<h2><?php esc_html_e( 'Statische Wallet-Zieladressen (non-custodial Forwarding)', 'krypto-gateway' ); ?></h2>
+							<p>
+							<?php esc_html_e( 'Hinterlegen Sie pro Coin/Chain die statische Adresse Ihrer EIGENEN Wallet. Der Kunde zahlt direkt an diese Adresse – das Gateway verwahrt keine Guthaben, leitet nur weiter und überwacht die Blockchain zur automatischen Markierung als „bezahlt“. Es werden KEINE Adressen pro Bestellung erzeugt.', 'krypto-gateway' ); ?>
+							</p>
+							<table class="form-table" role="presentation">
+							<?php foreach ( $chains as $chain ) : ?>
+							<?php
+							$chain_key   = strtolower( $chain );
+							$option_name = self::OPTION_ADDRESS_PREFIX . $chain_key;
+							$address     = (string) get_option( $option_name, '' );
+							$is_valid    = '' === $address || KG_Security::is_valid_wallet_address( $address, $chain );
+							?>
+							<tr>
+							<th scope="row">
+								<label for="<?php echo esc_attr( $option_name ); ?>">
+									<?php echo esc_html( sprintf( /* translators: %s: chain name */ __( 'Zieladresse %s', 'krypto-gateway' ), $chain ) ); ?>
+								</label>
+							</th>
+							<td>
+								<input
+									type="text"
+									id="<?php echo esc_attr( $option_name ); ?>"
+									name="<?php echo esc_attr( $option_name ); ?>"
+									value="<?php echo esc_attr( $address ); ?>"
+									class="regular-text code"
+									autocomplete="off"
+									spellcheck="false"
+								/>
+								<p class="description">
+									<?php
+									if ( ! $is_valid ) {
+										esc_html_e( 'Achtung: Der gespeicherte Wert entspricht nicht dem Adressformat dieser Chain und wird ignoriert. Bitte korrekte Adresse neu eintragen.', 'krypto-gateway' );
+									} else {
+										esc_html_e( 'Eigene Wallet-Adresse (wird unverändert an den Kunden angezeigt). Ungültige Formate werden beim Speichern verworfen.', 'krypto-gateway' );
+									}
+									?>
+								</p>
+							</td>
+							</tr>
+							<?php endforeach; ?>
+							</table>
 
 				<?php submit_button(); ?>
 			</form>

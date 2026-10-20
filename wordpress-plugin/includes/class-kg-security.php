@@ -162,6 +162,94 @@ final class KG_Security {
 		return array( 'BTC', 'LTC', 'ETH', 'SOL', 'XMR' );
 	}
 
+	/**
+	 * Normalisiert einen Chain-Namen (Großbuchstaben) und prüft die Erlaubnis.
+	 *
+	 * @param mixed $chain Chain-Name.
+	 * @return string Chain in Großbuchstaben oder '' bei ungültiger Chain.
+	 */
+	public static function normalize_chain( $chain ) {
+		$chain = is_string( $chain ) ? strtoupper( trim( $chain ) ) : '';
+
+		return self::is_valid_chain( $chain ) ? $chain : '';
+	}
+
+	/* -------------------------------------------------------------------------
+	 * Statische Wallet-Adressen (non-custodial Forwarding)
+	 * ---------------------------------------------------------------------- */
+
+	/**
+	 * Prüft eine statische Wallet-Adresse im Format der jeweiligen Chain.
+	 *
+	 * Im Forwarding-Modell ist die Zieladresse die EIGENE Wallet des Betreibers
+	 * (pro Coin/Chain statisch konfiguriert). Es gibt KEINE pro Bestellung
+	 * generierten Adressen und keine Adressableitung – die Prüfung hier dient
+	 * nur dazu, Tippfehler und kaputte Konfigurationen abzufangen.
+	 *
+	 * @param mixed  $address Zu prüfende Adresse.
+	 * @param mixed  $chain   Chain (BTC/LTC/ETH/SOL/XMR).
+	 * @return bool True bei plausibler Adressform.
+	 */
+	public static function is_valid_wallet_address( $address, $chain ) {
+		if ( ! is_string( $address ) || ! is_string( $chain ) ) {
+			return false;
+		}
+
+		$address = trim( $address );
+		$chain   = strtoupper( trim( $chain ) );
+
+		if ( '' === $address || strlen( $address ) > 128 ) {
+			return false;
+		}
+
+		$patterns = array(
+			// Bech32 (bc1…) oder Legacy Base58 (1…/3…).
+			'BTC' => '/^(bc1[a-z0-9]{25,62}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})$/',
+			// Bech32 (ltc1…) oder Legacy Base58 (L…/M…/3…).
+			'LTC' => '/^(ltc1[a-z0-9]{25,62}|[LM3][a-km-zA-HJ-NP-Z1-9]{25,34})$/',
+			// EVM-Adresse: 0x + 40 Hexzeichen.
+			'ETH' => '/^0x[a-fA-F0-9]{40}$/',
+			// Base58-Pubkey (32–44 Zeichen).
+			'SOL' => '/^[1-9A-HJ-NP-Za-km-z]{32,44}$/',
+			// Standard-/Subadresse (95 Zeichen) oder Integrated Address (106).
+			'XMR' => '/^([48][0-9A-Za-z]{94}|4[0-9A-Za-z]{105})$/',
+		);
+
+		if ( ! isset( $patterns[ $chain ] ) ) {
+			return false;
+		}
+
+		return (bool) preg_match( $patterns[ $chain ], $address );
+	}
+
+	/**
+	 * Sanitisiert eine statische Wallet-Adresse (Admin-Option).
+	 *
+	 * Ungültige Eingaben werden bewusst auf '' abgelehnt, statt sie zu
+	 * "reparieren" – eine manipulierte/korrupte Adresse darf nie als
+	 * Zahlungsziel gespeichert werden.
+	 *
+	 * @param mixed $value Roher Wert.
+	 * @param mixed $chain Chain (BTC/LTC/ETH/SOL/XMR).
+	 * @return string Gültige Adresse oder ''.
+	 */
+	public static function sanitize_wallet_address( $value, $chain ) {
+		$value = is_string( $value ) ? trim( wp_unslash( $value ) ) : '';
+
+		if ( '' === $value ) {
+			return '';
+		}
+
+		// Whitespace/Zeilenumbrüche sind nie Teil einer Adresse.
+		$stripped = preg_replace( '/\s+/', '', $value );
+
+		if ( ! is_string( $stripped ) || ! self::is_valid_wallet_address( $stripped, $chain ) ) {
+			return '';
+		}
+
+		return $stripped;
+	}
+
 	/* -------------------------------------------------------------------------
 	 * Anti-Sideloading
 	 * ---------------------------------------------------------------------- */

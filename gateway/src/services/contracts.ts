@@ -80,10 +80,39 @@ export interface ChainWatcher {
    * Liefert erkannte Transaktionen (inkl. Bestätigungen).
    */
   fetchPayments(address: string, sinceBlock?: number): Promise<ChainPayment[]>;
-  /** Erzeugt eine neue Empfangsadresse (falls die Chain das unterstützt). */
-  deriveAddress?(merchantId: string): Promise<string>;
   /** Anzahl Bestätigungen für "sicher" auf dieser Chain. */
   requiredConfirmations(): number;
+}
+
+/**
+ * Forwarding-Modell: liefert die statische Zieladresse pro Coin aus der Config.
+ * KEINE Adressableitung, KEINE Keys — der Betreiber hinterlegt eigene Adressen.
+ * Implementierung in src/core/addressProvider.ts.
+ */
+export interface AddressProvider {
+  /** Zieladresse für (chain, currency). Wirft, wenn nicht konfiguriert. */
+  getAddress(chain: Chain, currency: string): string;
+  /** Alle konfigurierten Adressen (für Monitoring/Polling). */
+  listAddresses(): Array<{ chain: Chain; currency: string; address: string }>;
+}
+
+/**
+ * Ordnet eingehende Blockchain-Zahlungen einer Invoice zu (Betrags-Matching).
+ * Da alle Bestellungen eines Coins an dieselbe statische Adresse zahlen,
+ * wird über den exakten Betrag + FIFO zugeordnet. Idempotent & race-sicher:
+ * eine (chain, txid, vout) wird nie doppelt verarbeitet.
+ * Implementierung in src/core/paymentMatcher.ts.
+ */
+export interface PaymentMatcher {
+  /** Verarbeitet eine erkannte Zahlung und ordnet sie einer Invoice zu. */
+  matchAndApply(payment: {
+    chain: Chain;
+    currency: string;
+    txid: string;
+    vout: number;
+    amount: string;
+    confirmations: number;
+  }): Promise<{ matchedInvoiceId: string | null; applied: boolean }>;
 }
 
 export interface ChainPayment {

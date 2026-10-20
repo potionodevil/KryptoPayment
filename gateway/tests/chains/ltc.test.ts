@@ -48,9 +48,11 @@ describe('LtcWatcher', () => {
     expect(payments.map((p) => p.txid)).toEqual(['new']);
   });
 
-  it('unterstützt deriveAddress via getnewaddress', async () => {
-    const { fetchImpl } = mockRpcFetch({ getnewaddress: 'ltc1qderived' });
+  it('führt KEINE Adressableitung durch (kein deriveAddress/getnewaddress)', async () => {
+    const { fetchImpl, calls } = mockRpcFetch({ listunspent: [] });
     const w = new LtcWatcher({ rpcUrl: 'http://x', fetchImpl });
-    await expect(w.deriveAddress?.('m1')).resolves.toBe('ltc1qderived');
+    expect((w as unknown as Record<string, unknown>).deriveAddress).toBeUndefined();
+    await w.fetchPayments(ADDR);
+    expect(calls.map((c) => c.method)).toEqual(['listunspent']);
   });
 });

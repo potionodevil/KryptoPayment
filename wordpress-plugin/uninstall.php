@@ -18,6 +18,12 @@ $kg_options = array(
 	'kg_key_id',
 	'kg_secret',
 	'kg_webhook_ips',
+	// Statische Wallet-Zieladressen (non-custodial Forwarding).
+	'kg_wallet_address_btc',
+	'kg_wallet_address_ltc',
+	'kg_wallet_address_eth',
+	'kg_wallet_address_sol',
+	'kg_wallet_address_xmr',
 );
 
 foreach ( $kg_options as $kg_option ) {
@@ -36,6 +42,7 @@ $kg_meta_keys = array(
 	'_kg_invoice_status',
 	'_kg_invoice_expires',
 	'_kg_txid',
+	'_kg_address_source',
 );
 
 foreach ( $kg_meta_keys as $kg_meta_key ) {

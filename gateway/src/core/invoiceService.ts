@@ -1,7 +1,19 @@
 /**
  * Invoice-Core: erstellt und verwaltet Invoices race-condition-sicher.
+ *
+ * Forwarding-Modell (NON-CUSTODIAL): Die Zieladresse kommt mit der Anfrage
+ * (req.targetAddress) und wird nur gespeichert — KEINE Adressableitung, KEINE
+ * Keys, keine Verwahrung. Das Adress-FORMAT wird pro Chain geprüft
+ * (core/addressProvider.ts).
+ *
  * Alle Status-Änderungen laufen in EINER Transaktion mit SELECT ... FOR UPDATE
  * und optimistic locking über invoices.version.
+ *
+ * Betrags-Eindeutigkeit: Unter AKTIVEN (unbezahlten) Invoices derselben
+ * Chain/Currency ist der Betrag eindeutig — kollidiert er, wird er um die
+ * kleinste Einheit der Chain "genudged". Damit ist die Zuordnung eingehender
+ * Zahlungen über den exakten Betrag (paymentMatcher) immer eindeutig.
+ * Race-sicher über Transaktion + Advisory-Lock pro (chain, currency).
  */
 import { z } from 'zod';
 import type {
@@ -10,6 +22,9 @@ import type {
 } from '../services/contracts.js';
 import type { Chain, CreateInvoiceRequest, Invoice, InvoiceStatus } from '../types/index.js';
 import { tx as defaultTxRunner, type TxRunner } from '../db/pool.js';
+import { assertValidAddress } from './addressProvider.js';
+import { addMinUnit, compareDecimalStrings, isDecimalString } from './decimal.js';
+import { SQL_ADVISORY_XACT_LOCK, forwardingLockKey } from './locking.js';
 import { assertTransition, GatewayError, isTerminal } from './stateMachine.js';
 
 // ---------------------------------------------------------------------------
@@ -28,6 +43,14 @@ export const SQL_SELECT_INVOICE_FOR_UPDATE =
 
 export const SQL_SELECT_INVOICE_BY_ORDER_REF =
   'SELECT * FROM invoices WHERE merchant_id = $1 AND order_ref = $2';
+
+/**
+ * Aktive (unbezahlte) Invoices mit exakt kollidierendem Betrag.
+ * Grundlage der Betrags-Eindeutigkeit; FOR UPDATE sperrt Kollisionszeilen.
+ */
+export const SQL_SELECT_ACTIVE_BY_AMOUNT =
+  'SELECT id FROM invoices WHERE chain = $1 AND crypto_currency = $2 AND amount_crypto = $3 ' +
+  "AND status IN ('CREATED','AWAITING_PAYMENT','PARTIALLY_PAID') FOR UPDATE";
 
 /** Status-Update mit optimistic locking (version-Guard) + paid_at/confirmed_at. */
 export const SQL_UPDATE_INVOICE_STATUS =
@@ -53,6 +76,8 @@ export const CreateInvoiceSchema = z.object({
   fiatCurrency: z.string().regex(/^[A-Za-z]{3}$/),
   cryptoCurrency: z.string().min(2).max(10),
   chain: z.enum(CHAIN_VALUES),
+  /** Forwarding-Zieladresse des Betreibers (wird auf der Invoice gespeichert). */
+  targetAddress: z.string().min(1).max(200),
 });
 
 // ---------------------------------------------------------------------------
@@ -87,12 +112,14 @@ export function mapInvoice(row: any): Invoice {
 }
 
 // ---------------------------------------------------------------------------
-// Quote-/Adress-Provider (Chain-Adapter werden per Injection verdrahtet)
+// Quote-Provider (Kurs-Feed; wird per Injection verdrahtet)
 // ---------------------------------------------------------------------------
 
 export interface CryptoQuote {
+  /** Exakter Krypto-Betrag als String (kein Float). */
   amountCrypto: string;
-  address: string;
+  /** @deprecated ignoriert — die Zieladresse kommt aus req.targetAddress. */
+  address?: string;
 }
 
 export type QuoteProvider = (
@@ -101,13 +128,12 @@ export type QuoteProvider = (
 ) => Promise<CryptoQuote>;
 
 /**
- * Platzhalter-Provider: 1:1-Kurs und deterministische Pseudo-Adresse.
- * In Produktion ersetzt (z.B. via setQuoteProvider) durch Kurs-Feed +
- * Chain-Adapter (src/chains) — bewusst lose gekoppelt.
+ * Platzhalter-Provider: 1:1-Kurs (amountFiat = amountCrypto).
+ * In Produktion ersetzt (via setQuoteProvider) durch einen Kurs-Feed.
+ * Es wird KEINE Adresse vergeben — non-custodial.
  */
 export const defaultQuoteProvider: QuoteProvider = async (req) => ({
   amountCrypto: req.amountFiat,
-  address: `kg-${req.chain.toLowerCase()}-pending`,
 });
 
 let activeQuote: QuoteProvider = defaultQuoteProvider;
@@ -117,6 +143,10 @@ export function setQuoteProvider(provider: QuoteProvider): void {
   activeQuote = provider;
 }
 
+// ---------------------------------------------------------------------------
+// Service
+// ---------------------------------------------------------------------------
+
 export interface InvoiceServiceDeps {
   txRunner?: TxRunner;
   quote?: QuoteProvider;
@@ -124,6 +154,12 @@ export interface InvoiceServiceDeps {
   /** Gültigkeit einer Invoice ab Erstellung (Sekunden). */
   ttlSec?: number;
 }
+
+/** Obergrenze Nudge-Versuche, bis ein Betrag eindeutig ist. */
+const MAX_AMOUNT_NUDGES = 10_000;
+
+/** Status aktiver (unbezahlter) Invoices — Grundlage der Betrags-Eindeutigkeit. */
+const ACTIVE_STATUSES = new Set(['CREATED', 'AWAITING_PAYMENT', 'PARTIALLY_PAID']);
 
 export function createInvoiceService(deps: InvoiceServiceDeps = {}): InvoiceServiceContract {
   const txRunner: TxRunner = deps.txRunner ?? defaultTxRunner;
@@ -133,6 +169,47 @@ export function createInvoiceService(deps: InvoiceServiceDeps = {}): InvoiceServ
 
   const run = <T>(client: DbClient | undefined, fn: (c: DbClient) => Promise<T>): Promise<T> =>
     client ? fn(client) : txRunner(fn, { rowLock: true });
+
+  /**
+   * Macht den Betrag unter AKTIVEN Invoices derselben Chain/Currency eindeutig:
+   * Kollision -> + kleinste Einheit der Chain, bis frei (max. MAX_AMOUNT_NUDGES).
+   */
+  async function ensureUniqueActiveAmount(
+    c: DbClient,
+    chain: Chain,
+    currency: string,
+    initial: string
+  ): Promise<string> {
+    let amount = initial;
+    for (let i = 0; ; i++) {
+      const hit = await c.query(SQL_SELECT_ACTIVE_BY_AMOUNT, [chain, currency, amount]);
+      if (hit.rowCount === 0) return amount;
+      if (i >= MAX_AMOUNT_NUDGES) {
+        throw new GatewayError(
+          'AMOUNT_EXHAUSTED',
+          `Betrag ${initial} für ${chain}/${currency} konnte nicht eindeutig gemacht werden`,
+          409
+        );
+      }
+      amount = addMinUnit(amount, chain);
+    }
+  }
+
+  /** Idempotenz-Prüfung: gleiche order_ref nur mit gleichen Parametern erlaubt. */
+  function assertCompatible(row: any, data: z.infer<typeof CreateInvoiceSchema>): void {
+    const compatible =
+      String(row.amount_fiat) === data.amountFiat &&
+      row.fiat_currency === data.fiatCurrency.toUpperCase() &&
+      row.chain === data.chain &&
+      row.crypto_currency === data.cryptoCurrency.toUpperCase();
+    if (!compatible) {
+      throw new GatewayError(
+        'ORDER_REF_CONFLICT',
+        `order_ref "${data.orderRef}" wurde bereits mit anderen Parametern verwendet`,
+        409
+      );
+    }
+  }
 
   async function createInvoice(
     merchantId: string,
@@ -145,46 +222,65 @@ export function createInvoiceService(deps: InvoiceServiceDeps = {}): InvoiceServ
       throw new GatewayError('VALIDATION_ERROR', `Ungültige Invoice-Anfrage — ${msg}`, 400);
     }
     const data = parsed.data;
-    const { amountCrypto, address } = await quote({ ...req, ...data }, merchantId);
+    const currency = data.cryptoCurrency.toUpperCase();
+    // Forwarding: Zieladresse aus der Anfrage, nur FORMAT-Check pro Chain.
+    const targetAddress = data.targetAddress.trim();
+    assertValidAddress(data.chain, targetAddress);
+
+    const qres = await quote({ ...req, ...data, targetAddress }, merchantId);
+    let amountCrypto = String(qres.amountCrypto ?? '').trim();
+    if (!isDecimalString(amountCrypto) || compareDecimalStrings(amountCrypto, '0') <= 0) {
+      throw new GatewayError(
+        'VALIDATION_ERROR',
+        'amount_crypto muss eine positive Dezimalzahl sein',
+        400
+      );
+    }
     const expiresAt = new Date(clock().getTime() + ttlSec * 1000).toISOString();
 
     return run(client, async (c) => {
+      // Race-sicher: serialisiert Erstellungen pro (chain, currency)
+      await c.query(SQL_ADVISORY_XACT_LOCK, [forwardingLockKey(data.chain, currency)]);
+
+      // Idempotenz: gleiche (merchant_id, order_ref) liefert die bestehende Invoice.
+      const existing = await c.query(SQL_SELECT_INVOICE_BY_ORDER_REF, [
+        merchantId,
+        data.orderRef,
+      ]);
+      if (existing.rowCount > 0) {
+        const row = existing.rows[0];
+        assertCompatible(row, data);
+        return mapInvoice(row);
+      }
+
+      // Eindeutiger Betrag unter AKTIVEN Invoices derselben Chain/Currency
+      amountCrypto = await ensureUniqueActiveAmount(c, data.chain, currency, amountCrypto);
+
       const inserted = await c.query(SQL_INSERT_INVOICE, [
         merchantId,
         data.orderRef,
         data.amountFiat,
         data.fiatCurrency.toUpperCase(),
         amountCrypto,
-        data.cryptoCurrency.toUpperCase(),
+        currency,
         data.chain,
-        address,
+        targetAddress,
         'AWAITING_PAYMENT',
         expiresAt,
       ]);
       if (inserted.rowCount > 0) {
         return mapInvoice(inserted.rows[0]);
       }
-      // Idempotenz: gleiche (merchant_id, order_ref) liefert die bestehende Invoice.
-      const existing = await c.query(SQL_SELECT_INVOICE_BY_ORDER_REF, [
+      // ON-CONFLICT-Race um (merchant_id, order_ref) -> bestehende Invoice.
+      const again = await c.query(SQL_SELECT_INVOICE_BY_ORDER_REF, [
         merchantId,
         data.orderRef,
       ]);
-      const row = existing.rows[0];
+      const row = again.rows[0];
       if (!row) {
         throw new GatewayError('INVOICE_CONFLICT', 'Invoice konnte nicht erstellt werden', 409);
       }
-      const compatible =
-        String(row.amount_fiat) === data.amountFiat &&
-        row.fiat_currency === data.fiatCurrency.toUpperCase() &&
-        row.chain === data.chain &&
-        row.crypto_currency === data.cryptoCurrency.toUpperCase();
-      if (!compatible) {
-        throw new GatewayError(
-          'ORDER_REF_CONFLICT',
-          `order_ref "${data.orderRef}" wurde bereits mit anderen Parametern verwendet`,
-          409
-        );
-      }
+      assertCompatible(row, data);
       return mapInvoice(row);
     });
   }
@@ -208,7 +304,7 @@ export function createInvoiceService(deps: InvoiceServiceDeps = {}): InvoiceServ
       if (!row) {
         throw new GatewayError('INVOICE_NOT_FOUND', `Invoice ${id} nicht gefunden`, 404);
       }
-      if (isTerminal(row.status) && row.status !== to) {
+      if (isTerminal(row.status as InvoiceStatus) && row.status !== to) {
         // Terminalstatus sind endgültig — zusätzlich zur State-Machine absichern.
         assertTransition(row.status as InvoiceStatus, to);
       }

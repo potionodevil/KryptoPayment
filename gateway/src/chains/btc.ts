@@ -92,19 +92,8 @@ export class UtxoWatcher implements ChainWatcher {
     return payments;
   }
 
-  /** Erzeugt eine neue Empfangsadresse (bitcoind: getnewaddress, bech32). */
-  async deriveAddress(merchantId: string): Promise<string> {
-    const result = await jsonRpcCall(
-      this.rpcUrl,
-      'getnewaddress',
-      [merchantId ?? '', 'bech32'],
-      { fetchImpl: this.fetchImpl, auth: this.auth }
-    );
-    if (typeof result !== 'string' || !result) {
-      throw new RpcError(`getnewaddress lieferte keine Adresse bei ${this.chain}`);
-    }
-    return result;
-  }
+  // Hinweis: bewusst KEINE Adressableitung (kein getnewaddress).
+  // Forwarding-Modell: der Betreiber hinterlegt statische Zieladressen.
 }
 
 /** Bitcoin: 3 Bestätigungen als "sicher". */
