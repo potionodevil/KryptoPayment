@@ -1,0 +1,8 @@
+# Platzhalter: TLS-Zertifikate hier ablegen (werden nach
+# /etc/nginx/certs im Container gemountet, siehe docker-compose.yml):
+#
+#   fullchain.pem   — Zertifikat + Chain (Let's Encrypt: fullchain.pem)
+#   privkey.pem     — privater Schlüssel (Let's Encrypt: privkey.pem)
+#
+# Liegen keine Zertifikate hier, erzeugt entrypoint.sh beim Start ein
+# Self-Signed-Zertifikat (nur für die Entwicklung). Details: README.md

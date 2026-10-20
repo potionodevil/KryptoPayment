@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+*.log
+.env
+.env.local
+*.tsbuildinfo
+coverage/
+.DS_Store
+vendor/
+.phpunit.result.cache

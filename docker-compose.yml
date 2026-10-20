@@ -1,0 +1,91 @@
+version: "3.9"
+
+# Krypto Payment Gateway — Docker-Stack
+# Services: edge (nginx/WAF) → gateway (Node/TS) → postgres + redis
+# WordPress läuft extern und spricht signiert mit dem Gateway.
+
+services:
+  # ── Vorgeschalteter Sicherheits-Layer ─────────────────────────────
+  edge:
+    build:
+      context: ./edge
+    container_name: krypto-edge
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - GATEWAY_UPSTREAM=gateway:4000
+      - IP_WHITELIST=${IP_WHITELIST:-}
+    volumes:
+      - ./edge/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./edge/waf.conf:/etc/nginx/waf.conf:ro
+      - ./edge/certs:/etc/nginx/certs:ro
+    depends_on:
+      - gateway
+    networks:
+      - krypto-net
+
+  # ── Gateway API (Node/TypeScript) ─────────────────────────────────
+  gateway:
+    build:
+      context: ./gateway
+    container_name: krypto-gateway
+    restart: unless-stopped
+    expose:
+      - "4000"
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - DATABASE_URL=postgres://${POSTGRES_USER:-krypto}:${POSTGRES_PASSWORD:-krypto}@postgres:5432/${POSTGRES_DB:-krypto}
+      - REDIS_URL=redis://redis:6379
+      - HMAC_CLOCK_SKEW_SEC=300
+      - APP_IP_WHITELIST=${IP_WHITELIST:-}
+      # Chain-RPC-Endpoints (konfigurierbar):
+      - BTC_RPC_URL=${BTC_RPC_URL:-}
+      - LTC_RPC_URL=${LTC_RPC_URL:-}
+      - ETH_RPC_URL=${ETH_RPC_URL:-}
+      - SOL_RPC_URL=${SOL_RPC_URL:-}
+      - XMR_RPC_URL=${XMR_RPC_URL:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - krypto-net
+
+  # ── PostgreSQL (persistente Daten, Transaktionen) ─────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: krypto-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-krypto}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-krypto}
+      POSTGRES_DB: ${POSTGRES_DB:-krypto}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./gateway/src/db/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-krypto}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - krypto-net
+
+  # ── Redis (Rate-Limit-Zähler, Nonce-Cache) ────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: krypto-redis
+    restart: unless-stopped
+    networks:
+      - krypto-net
+
+volumes:
+  pgdata:
+
+networks:
+  krypto-net:
+    driver: bridge
